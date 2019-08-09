@@ -100,7 +100,7 @@ def curlTest (namespace, out) {
 /*
     This is the main pipeline section with the stages of the CI/CD
  */
-pipeline {
+podTemplate {
 
     options {
         // Build auto timeout
@@ -136,7 +136,6 @@ pipeline {
     }
 
     // In this example, all is built and run from the master
-    podTemplate {
             
         node(POD_LABEL) {
             // Pipeline stages
@@ -404,4 +403,4 @@ pipeline {
             }
         }
     }
-}
+
