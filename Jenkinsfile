@@ -137,265 +137,267 @@ pipeline {
 
     // In this example, all is built and run from the master
     podTemplate {
+            
+        node(POD_LABEL) {
+            // Pipeline stages
+            stages {
 
-        // Pipeline stages
-        stages {
+                ////////// Step 1 //////////
+                stage('Git clone and setup') {
+                    steps {
+                        echo "Check out acme code"
+                        git branch: "master",
+                                credentialsId: 'eldada-bb',
+                                url: 'https://github.com/eldada/jenkins-pipeline-kubernetes.git'
 
-            ////////// Step 1 //////////
-            stage('Git clone and setup') {
-                steps {
-                    echo "Check out acme code"
-                    git branch: "master",
-                            credentialsId: 'eldada-bb',
-                            url: 'https://github.com/eldada/jenkins-pipeline-kubernetes.git'
+                        // Validate kubectl
+                        sh "kubectl cluster-info"
 
-                    // Validate kubectl
-                    sh "kubectl cluster-info"
+                        // Init helm client
+                        sh "helm init"
 
-                    // Init helm client
-                    sh "helm init"
-
-                    // Make sure parameters file exists
-                    script {
-                        if (! fileExists("${PARAMETERS_FILE}")) {
-                            echo "ERROR: ${PARAMETERS_FILE} is missing!"
+                        // Make sure parameters file exists
+                        script {
+                            if (! fileExists("${PARAMETERS_FILE}")) {
+                                echo "ERROR: ${PARAMETERS_FILE} is missing!"
+                            }
                         }
-                    }
 
-                    // Load Docker registry and Helm repository configurations from file
-                    load "${JENKINS_HOME}/parameters.groovy"
+                        // Load Docker registry and Helm repository configurations from file
+                        load "${JENKINS_HOME}/parameters.groovy"
 
-                    echo "DOCKER_REG is ${DOCKER_REG}"
-                    echo "HELM_REPO  is ${HELM_REPO}"
+                        echo "DOCKER_REG is ${DOCKER_REG}"
+                        echo "HELM_REPO  is ${HELM_REPO}"
 
-                    // Define a unique name for the tests container and helm release
-                    script {
-                        branch = GIT_BRANCH.replaceAll('/', '-').replaceAll('\\*', '-')
-                        ID = "${IMAGE_NAME}-${DOCKER_TAG}-${branch}"
+                        // Define a unique name for the tests container and helm release
+                        script {
+                            branch = GIT_BRANCH.replaceAll('/', '-').replaceAll('\\*', '-')
+                            ID = "${IMAGE_NAME}-${DOCKER_TAG}-${branch}"
 
-                        echo "Global ID set to ${ID}"
-                    }
-                }
-            }
-
-            ////////// Step 2 //////////
-            stage('Build and tests') {
-                steps {
-                    echo "Building application and Docker image"
-                    sh "${WORKSPACE}/build.sh --build --registry ${DOCKER_REG} --tag ${DOCKER_TAG} --docker_usr ${DOCKER_USR} --docker_psw ${DOCKER_PSW}"
-
-                    echo "Running tests"
-
-                    // Kill container in case there is a leftover
-                    sh "[ -z \"\$(docker ps -a | grep ${ID} 2>/dev/null)\" ] || docker rm -f ${ID}"
-
-                    echo "Starting ${IMAGE_NAME} container"
-                    sh "docker run --detach --name ${ID} --rm --publish ${TEST_LOCAL_PORT}:80 ${DOCKER_REG}/${IMAGE_NAME}:${DOCKER_TAG}"
-
-                    script {
-                        host_ip = sh(returnStdout: true, script: '/sbin/ip route | awk \'/default/ { print $3 ":${TEST_LOCAL_PORT}" }\'')
-                    }
-                }
-            }
-
-            // Run the 3 tests on the currently running ACME Docker container
-            stage('Local tests') {
-                parallel {
-                    stage('Curl http_code') {
-                        steps {
-                            curlRun ("http://${host_ip}", 'http_code')
-                        }
-                    }
-                    stage('Curl total_time') {
-                        steps {
-                            curlRun ("http://${host_ip}", 'total_time')
-                        }
-                    }
-                    stage('Curl size_download') {
-                        steps {
-                            curlRun ("http://${host_ip}", 'size_download')
+                            echo "Global ID set to ${ID}"
                         }
                     }
                 }
-            }
 
-            ////////// Step 3 //////////
-            stage('Publish Docker and Helm') {
-                steps {
-                    echo "Stop and remove container"
-                    sh "docker stop ${ID}"
+                ////////// Step 2 //////////
+                stage('Build and tests') {
+                    steps {
+                        echo "Building application and Docker image"
+                        sh "${WORKSPACE}/build.sh --build --registry ${DOCKER_REG} --tag ${DOCKER_TAG} --docker_usr ${DOCKER_USR} --docker_psw ${DOCKER_PSW}"
 
-                    echo "Pushing ${DOCKER_REG}/${IMAGE_NAME}:${DOCKER_TAG} image to registry"
-                    sh "${WORKSPACE}/build.sh --push --registry ${DOCKER_REG} --tag ${DOCKER_TAG} --docker_usr ${DOCKER_USR} --docker_psw ${DOCKER_PSW}"
+                        echo "Running tests"
 
-                    echo "Packing helm chart"
-                    sh "${WORKSPACE}/build.sh --pack_helm --push_helm --helm_repo ${HELM_REPO} --helm_usr ${HELM_USR} --helm_psw ${HELM_PSW}"
-                }
-            }
+                        // Kill container in case there is a leftover
+                        sh "[ -z \"\$(docker ps -a | grep ${ID} 2>/dev/null)\" ] || docker rm -f ${ID}"
 
-            ////////// Step 4 //////////
-            stage('Deploy to dev') {
-                steps {
-                    script {
-                        namespace = 'development'
+                        echo "Starting ${IMAGE_NAME} container"
+                        sh "docker run --detach --name ${ID} --rm --publish ${TEST_LOCAL_PORT}:80 ${DOCKER_REG}/${IMAGE_NAME}:${DOCKER_TAG}"
 
-                        echo "Deploying application ${ID} to ${namespace} namespace"
-                        createNamespace (namespace)
-
-                        // Remove release if exists
-                        helmDelete (namespace, "${ID}")
-
-                        // Deploy with helm
-                        echo "Deploying"
-                        helmInstall(namespace, "${ID}")
-                    }
-                }
-            }
-
-            // Run the 3 tests on the deployed Kubernetes pod and service
-            stage('Dev tests') {
-                parallel {
-                    stage('Curl http_code') {
-                        steps {
-                            curlTest (namespace, 'http_code')
-                        }
-                    }
-                    stage('Curl total_time') {
-                        steps {
-                            curlTest (namespace, 'time_total')
-                        }
-                    }
-                    stage('Curl size_download') {
-                        steps {
-                            curlTest (namespace, 'size_download')
+                        script {
+                            host_ip = sh(returnStdout: true, script: '/sbin/ip route | awk \'/default/ { print $3 ":${TEST_LOCAL_PORT}" }\'')
                         }
                     }
                 }
-            }
 
-            stage('Cleanup dev') {
-                steps {
-                    script {
-                        // Remove release if exists
-                        helmDelete (namespace, "${ID}")
-                    }
-                }
-            }
-
-            ////////// Step 5 //////////
-            stage('Deploy to staging') {
-                steps {
-                    script {
-                        namespace = 'staging'
-
-                        echo "Deploying application ${IMAGE_NAME}:${DOCKER_TAG} to ${namespace} namespace"
-                        createNamespace (namespace)
-
-                        // Remove release if exists
-                        helmDelete (namespace, "${ID}")
-
-                        // Deploy with helm
-                        echo "Deploying"
-                        helmInstall (namespace, "${ID}")
-                    }
-                }
-            }
-
-            // Run the 3 tests on the deployed Kubernetes pod and service
-            stage('Staging tests') {
-                parallel {
-                    stage('Curl http_code') {
-                        steps {
-                            curlTest (namespace, 'http_code')
+                // Run the 3 tests on the currently running ACME Docker container
+                stage('Local tests') {
+                    parallel {
+                        stage('Curl http_code') {
+                            steps {
+                                curlRun ("http://${host_ip}", 'http_code')
+                            }
                         }
-                    }
-                    stage('Curl total_time') {
-                        steps {
-                            curlTest (namespace, 'time_total')
+                        stage('Curl total_time') {
+                            steps {
+                                curlRun ("http://${host_ip}", 'total_time')
+                            }
                         }
-                    }
-                    stage('Curl size_download') {
-                        steps {
-                            curlTest (namespace, 'size_download')
+                        stage('Curl size_download') {
+                            steps {
+                                curlRun ("http://${host_ip}", 'size_download')
+                            }
                         }
                     }
                 }
-            }
 
-            stage('Cleanup staging') {
-                steps {
-                    script {
-                        // Remove release if exists
-                        helmDelete (namespace, "${ID}")
-                    }
-                }
-            }
+                ////////// Step 3 //////////
+                stage('Publish Docker and Helm') {
+                    steps {
+                        echo "Stop and remove container"
+                        sh "docker stop ${ID}"
 
-            ////////// Step 6 //////////
-            // Waif for user manual approval, or proceed automatically if DEPLOY_TO_PROD is true
-            stage('Go for Production?') {
-                when {
-                    allOf {
-                        environment name: 'GIT_BRANCH', value: 'master'
-                        environment name: 'DEPLOY_TO_PROD', value: 'false'
+                        echo "Pushing ${DOCKER_REG}/${IMAGE_NAME}:${DOCKER_TAG} image to registry"
+                        sh "${WORKSPACE}/build.sh --push --registry ${DOCKER_REG} --tag ${DOCKER_TAG} --docker_usr ${DOCKER_USR} --docker_psw ${DOCKER_PSW}"
+
+                        echo "Packing helm chart"
+                        sh "${WORKSPACE}/build.sh --pack_helm --push_helm --helm_repo ${HELM_REPO} --helm_usr ${HELM_USR} --helm_psw ${HELM_PSW}"
                     }
                 }
 
-                steps {
-                    // Prevent any older builds from deploying to production
-                    milestone(1)
-                    input 'Proceed and deploy to Production?'
-                    milestone(2)
+                ////////// Step 4 //////////
+                stage('Deploy to dev') {
+                    steps {
+                        script {
+                            namespace = 'development'
 
-                    script {
-                        DEPLOY_PROD = true
+                            echo "Deploying application ${ID} to ${namespace} namespace"
+                            createNamespace (namespace)
+
+                            // Remove release if exists
+                            helmDelete (namespace, "${ID}")
+
+                            // Deploy with helm
+                            echo "Deploying"
+                            helmInstall(namespace, "${ID}")
+                        }
                     }
                 }
-            }
 
-            stage('Deploy to Production') {
-                when {
-                    anyOf {
+                // Run the 3 tests on the deployed Kubernetes pod and service
+                stage('Dev tests') {
+                    parallel {
+                        stage('Curl http_code') {
+                            steps {
+                                curlTest (namespace, 'http_code')
+                            }
+                        }
+                        stage('Curl total_time') {
+                            steps {
+                                curlTest (namespace, 'time_total')
+                            }
+                        }
+                        stage('Curl size_download') {
+                            steps {
+                                curlTest (namespace, 'size_download')
+                            }
+                        }
+                    }
+                }
+
+                stage('Cleanup dev') {
+                    steps {
+                        script {
+                            // Remove release if exists
+                            helmDelete (namespace, "${ID}")
+                        }
+                    }
+                }
+
+                ////////// Step 5 //////////
+                stage('Deploy to staging') {
+                    steps {
+                        script {
+                            namespace = 'staging'
+
+                            echo "Deploying application ${IMAGE_NAME}:${DOCKER_TAG} to ${namespace} namespace"
+                            createNamespace (namespace)
+
+                            // Remove release if exists
+                            helmDelete (namespace, "${ID}")
+
+                            // Deploy with helm
+                            echo "Deploying"
+                            helmInstall (namespace, "${ID}")
+                        }
+                    }
+                }
+
+                // Run the 3 tests on the deployed Kubernetes pod and service
+                stage('Staging tests') {
+                    parallel {
+                        stage('Curl http_code') {
+                            steps {
+                                curlTest (namespace, 'http_code')
+                            }
+                        }
+                        stage('Curl total_time') {
+                            steps {
+                                curlTest (namespace, 'time_total')
+                            }
+                        }
+                        stage('Curl size_download') {
+                            steps {
+                                curlTest (namespace, 'size_download')
+                            }
+                        }
+                    }
+                }
+
+                stage('Cleanup staging') {
+                    steps {
+                        script {
+                            // Remove release if exists
+                            helmDelete (namespace, "${ID}")
+                        }
+                    }
+                }
+
+                ////////// Step 6 //////////
+                // Waif for user manual approval, or proceed automatically if DEPLOY_TO_PROD is true
+                stage('Go for Production?') {
+                    when {
+                        allOf {
+                            environment name: 'GIT_BRANCH', value: 'master'
+                            environment name: 'DEPLOY_TO_PROD', value: 'false'
+                        }
+                    }
+
+                    steps {
+                        // Prevent any older builds from deploying to production
+                        milestone(1)
+                        input 'Proceed and deploy to Production?'
+                        milestone(2)
+
+                        script {
+                            DEPLOY_PROD = true
+                        }
+                    }
+                }
+
+                stage('Deploy to Production') {
+                    when {
+                        anyOf {
+                            expression { DEPLOY_PROD == true }
+                            environment name: 'DEPLOY_TO_PROD', value: 'true'
+                        }
+                    }
+
+                    steps {
+                        script {
+                            DEPLOY_PROD = true
+                            namespace = 'production'
+
+                            echo "Deploying application ${IMAGE_NAME}:${DOCKER_TAG} to ${namespace} namespace"
+                            createNamespace (namespace)
+
+                            // Deploy with helm
+                            echo "Deploying"
+                            helmInstall (namespace, "${ID}")
+                        }
+                    }
+                }
+
+                // Run the 3 tests on the deployed Kubernetes pod and service
+                stage('Production tests') {
+                    when {
                         expression { DEPLOY_PROD == true }
-                        environment name: 'DEPLOY_TO_PROD', value: 'true'
                     }
-                }
 
-                steps {
-                    script {
-                        DEPLOY_PROD = true
-                        namespace = 'production'
-
-                        echo "Deploying application ${IMAGE_NAME}:${DOCKER_TAG} to ${namespace} namespace"
-                        createNamespace (namespace)
-
-                        // Deploy with helm
-                        echo "Deploying"
-                        helmInstall (namespace, "${ID}")
-                    }
-                }
-            }
-
-            // Run the 3 tests on the deployed Kubernetes pod and service
-            stage('Production tests') {
-                when {
-                    expression { DEPLOY_PROD == true }
-                }
-
-                parallel {
-                    stage('Curl http_code') {
-                        steps {
-                            curlTest (namespace, 'http_code')
+                    parallel {
+                        stage('Curl http_code') {
+                            steps {
+                                curlTest (namespace, 'http_code')
+                            }
                         }
-                    }
-                    stage('Curl total_time') {
-                        steps {
-                            curlTest (namespace, 'time_total')
+                        stage('Curl total_time') {
+                            steps {
+                                curlTest (namespace, 'time_total')
+                            }
                         }
-                    }
-                    stage('Curl size_download') {
-                        steps {
-                            curlTest (namespace, 'size_download')
+                        stage('Curl size_download') {
+                            steps {
+                                curlTest (namespace, 'size_download')
+                            }
                         }
                     }
                 }
